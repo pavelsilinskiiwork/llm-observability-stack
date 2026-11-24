@@ -1,0 +1,87 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  PROMTOOL_VERSION: "2.55.1"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install ruff
+      - run: ruff check . && ruff format --check .
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: pip install -r requirements-dev.txt pyyaml
+      - name: Install promtool
+        run: |
+          curl -sSL "https://github.com/prometheus/prometheus/releases/download/v${PROMTOOL_VERSION}/prometheus-${PROMTOOL_VERSION}.linux-amd64.tar.gz" | tar xz
+          echo "$PWD/prometheus-${PROMTOOL_VERSION}.linux-amd64" >> "$GITHUB_PATH"
+      - run: python -m pytest --cov=llm_obs --cov-fail-under=90
+
+  config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Generated dashboard is up to date
+        run: python grafana/build_dashboard.py --check
+      - name: Compose file is valid
+        run: docker compose config --quiet
+      - name: Install promtool
+        run: |
+          curl -sSL "https://github.com/prometheus/prometheus/releases/download/v${PROMTOOL_VERSION}/prometheus-${PROMTOOL_VERSION}.linux-amd64.tar.gz" | tar xz
+          echo "$PWD/prometheus-${PROMTOOL_VERSION}.linux-amd64" >> "$GITHUB_PATH"
+      - name: Prometheus config, rules and alert unit tests
+        run: |
+          promtool check rules prometheus/rules/llm.yml
+          promtool test rules prometheus/rules/tests/llm_test.yml
+
+  stack:
+    # Real Prometheus scraping the real service: every dashboard query must return data.
+    runs-on: ubuntu-latest
+    needs: [test, config]
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose up -d --build app prometheus
+      - name: Wait for the service
+        run: |
+          for i in $(seq 1 30); do curl -sf localhost:8000/health && break; sleep 2; done
+          curl -sf localhost:8000/health
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install httpx pyyaml
+      - name: Generate traffic
+        run: PYTHONPATH=. python -m llm_obs.loadgen --scenario steady --rps 5 --scale 0.7
+      - name: Wait for Prometheus to scrape
+        run: sleep 15
+      - name: Every dashboard query returns data
+        run: python scripts/verify_queries.py --prometheus-url http://localhost:9090
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs
+      - run: docker compose down -v

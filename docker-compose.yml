@@ -1,0 +1,32 @@
+services:
+  app:
+    build: .
+    environment:
+      DEMO_CONTROLS: "true"
+      DAILY_BUDGET_USD: ${DAILY_BUDGET_USD:-1.0}
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on:
+      - app
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}   # local demo only: change it if you expose the port
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/llm-overview.json
+      GF_USERS_DEFAULT_THEME: light
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus

@@ -1,0 +1,6 @@
+line-length = 120
+target-version = "py311"
+extend-exclude = ["grafana/build_dashboard.py"]  # laid out as data: formatting it would hurt readability
+
+[lint]
+select = ["E", "F", "I", "B", "UP", "RET"]

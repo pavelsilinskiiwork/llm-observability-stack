@@ -1,0 +1,62 @@
+# Recording rules precompute the expressions that dashboards and alerts share; alert rules fire on them.
+# Windows are 2 minutes so the demo scenario can trigger them within minutes. In production you would use
+# longer windows or multi-window burn-rate alerts to avoid flapping.
+groups:
+  - name: llm-recording
+    rules:
+      - record: llm:requests:rate2m
+        expr: sum(rate(llm_requests_total[2m]))
+      - record: llm:error_ratio:rate2m
+        expr: sum(rate(llm_requests_total{status="error"}[2m])) / sum(rate(llm_requests_total[2m]))
+      - record: llm:latency_seconds:p95_2m
+        expr: histogram_quantile(0.95, sum by (le) (rate(llm_request_duration_seconds_bucket{status="ok"}[2m])))
+      - record: llm:cost_usd_per_hour:rate5m
+        expr: sum(rate(llm_cost_usd_total[5m])) * 3600
+
+  - name: llm-alerts
+    rules:
+      - alert: LLMAppDown
+        expr: up{job="llm-app"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "The LLM service is not being scraped"
+          description: "Prometheus cannot reach {{ $labels.instance }}. Check the container and /metrics."
+
+      - alert: LLMHighErrorRate
+        expr: llm:error_ratio:rate2m > 0.05 and llm:requests:rate2m > 0.2
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "More than 5% of LLM calls are failing"
+          description: "Error ratio is {{ $value | humanizePercentage }} over the last 2 minutes."
+          runbook: "Check provider status, then switch traffic to a fallback provider."
+
+      - alert: LLMHighLatencyP95
+        expr: llm:latency_seconds:p95_2m > 2 and llm:requests:rate2m > 0.2
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 latency of successful LLM calls is above 2 seconds"
+          description: "p95 is {{ $value | humanizeDuration }} over the last 2 minutes."
+
+      - alert: LLMBudgetMostlySpent
+        expr: llm_daily_spend_usd / llm_daily_budget_usd > 0.8
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 80% of today's LLM budget is spent"
+          description: "{{ $value | humanizePercentage }} of the daily budget is used."
+
+      - alert: LLMSpendRateAboveBudget
+        expr: llm:cost_usd_per_hour:rate5m * 24 > llm_daily_budget_usd
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "At the current rate the daily budget will be exceeded"
+          description: "Current spend rate projects to ${{ $value | printf \"%.2f\" }} per day."

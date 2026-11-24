@@ -1,0 +1,130 @@
+# promtool test rules prometheus/rules/tests/llm_test.yml
+# Synthetic series with known values, so every alert is shown to fire when it should and stay quiet otherwise.
+rule_files:
+  - ../llm.yml
+
+evaluation_interval: 15s
+
+tests:
+  - interval: 15s
+    name: half of the calls fail, so the error alert fires
+    input_series:
+      - series: 'llm_requests_total{provider="fake",model="fast-small",status="ok"}'
+        values: "0+5x40"
+      - series: 'llm_requests_total{provider="fake",model="fast-small",status="error"}'
+        values: "0+5x40"
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: LLMHighErrorRate
+        exp_alerts: []   # not yet: the window is still filling and "for: 1m" has not elapsed
+      - eval_time: 5m
+        alertname: LLMHighErrorRate
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "More than 5% of LLM calls are failing"
+              description: "Error ratio is 50% over the last 2 minutes."
+              runbook: "Check provider status, then switch traffic to a fallback provider."
+
+  - interval: 15s
+    name: healthy traffic raises no error alert
+    input_series:
+      - series: 'llm_requests_total{provider="fake",model="fast-small",status="ok"}'
+        values: "0+5x40"
+      - series: 'llm_requests_total{provider="fake",model="fast-small",status="error"}'
+        values: "0x40"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: LLMHighErrorRate
+        exp_alerts: []
+
+  - interval: 15s
+    name: errors without traffic do not page (the traffic guard)
+    input_series:
+      - series: 'llm_requests_total{provider="fake",model="fast-small",status="ok"}'
+        values: "0x40"
+      - series: 'llm_requests_total{provider="fake",model="fast-small",status="error"}'
+        values: "0+0.1x40"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: LLMHighErrorRate
+        exp_alerts: []
+
+  - interval: 15s
+    name: slow responses fire the latency alert
+    input_series:
+      # every successful call takes between 2 and 5 seconds: the 2s bucket never grows, 5s and above do
+      - series: 'llm_request_duration_seconds_bucket{provider="fake",model="big-smart",status="ok",le="2"}'
+        values: "0x40"
+      - series: 'llm_request_duration_seconds_bucket{provider="fake",model="big-smart",status="ok",le="5"}'
+        values: "0+5x40"
+      - series: 'llm_request_duration_seconds_bucket{provider="fake",model="big-smart",status="ok",le="+Inf"}'
+        values: "0+5x40"
+      - series: 'llm_requests_total{provider="fake",model="big-smart",status="ok"}'
+        values: "0+5x40"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: LLMHighLatencyP95
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "p95 latency of successful LLM calls is above 2 seconds"
+              description: "p95 is 4.85s over the last 2 minutes."
+
+  - interval: 15s
+    name: fast responses do not fire the latency alert
+    input_series:
+      - series: 'llm_request_duration_seconds_bucket{provider="fake",model="fast-small",status="ok",le="0.5"}'
+        values: "0+5x40"
+      - series: 'llm_request_duration_seconds_bucket{provider="fake",model="fast-small",status="ok",le="2"}'
+        values: "0+5x40"
+      - series: 'llm_request_duration_seconds_bucket{provider="fake",model="fast-small",status="ok",le="+Inf"}'
+        values: "0+5x40"
+      - series: 'llm_requests_total{provider="fake",model="fast-small",status="ok"}'
+        values: "0+5x40"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: LLMHighLatencyP95
+        exp_alerts: []
+
+  - interval: 15s
+    name: budget alert fires above 80 percent and not below
+    input_series:
+      - series: "llm_daily_budget_usd"
+        values: "1x40"
+      - series: "llm_daily_spend_usd"
+        values: "0.5x10 0.9x30"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: LLMBudgetMostlySpent
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: LLMBudgetMostlySpent
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "More than 80% of today's LLM budget is spent"
+              description: "90% of the daily budget is used."
+
+  - interval: 15s
+    name: a target that stops answering raises the down alert
+    input_series:
+      - series: 'up{job="llm-app",instance="app:8000"}'
+        values: "1x8 0x20"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: LLMAppDown
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: LLMAppDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: llm-app
+              instance: "app:8000"
+            exp_annotations:
+              summary: "The LLM service is not being scraped"
+              description: "Prometheus cannot reach app:8000. Check the container and /metrics."
