@@ -47,6 +47,8 @@ docker compose up --build
 - Grafana: http://127.0.0.1:3000 (user `admin`, password `admin`: local demo only, set `GRAFANA_PASSWORD` to change it).
   The "LLM service overview" dashboard is already there, in the folder "LLM".
 - Prometheus: http://127.0.0.1:9090 (the *Alerts* page shows the rules)
+- Traces: Grafana → Explore → *Tempo* → Search. Every `/chat` response carries an `x-trace-id` header; paste it into
+  the *TraceQL* / trace-id box to open that request (a `chat` span with an `llm.generate` child).
 - Service: http://127.0.0.1:8000/docs
 
 Then generate traffic and break things (about 10 minutes):
@@ -60,6 +62,22 @@ The `demo` scenario runs: normal, failing (40% of calls fail), normal, slow (4x 
 ratio and latency panels move, and the alerts go pending, then firing, then resolved.
 `--scenario steady` sends normal traffic only. `--scale 0.5` halves every phase.
 
+## Tracing (OpenTelemetry)
+
+Metrics say *that* something is slow; a trace says *where*. Each `/chat` request produces one trace: a `chat` span
+and an `llm.generate` child around the model call, exported over OTLP/HTTP to Grafana Tempo
+(`OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4318`, set in `docker-compose.yml`; unset, nothing is exported).
+
+- The model span uses the GenAI attribute names (`gen_ai.request.model`, `gen_ai.usage.input_tokens`,
+  `gen_ai.usage.output_tokens`) plus `llm.cost_usd`. **The prompt text is never recorded.**
+- A provider failure sets the root span to `ERROR` and records the exception.
+- An incoming `traceparent` header is continued, so the service can join a trace started by a caller.
+- Tempo is provisioned as a Grafana datasource next to Prometheus.
+
+What is and is not checked: unit tests collect spans in memory and assert structure, attributes, the error path,
+header propagation and that no prompt leaks. The `stack` job in CI starts Tempo, sends a request and polls Tempo's
+query API for that trace id (`scripts/verify_traces.py`). Logs are not part of this; only traces and metrics.
+
 ## Dashboard as code
 
 `grafana/build_dashboard.py` generates `grafana/dashboards/llm-overview.json`; Grafana loads it through file
@@ -70,7 +88,7 @@ edit cannot sneak in. The datasource is provisioned with a fixed `uid`, so the d
 ## How it is checked
 
 ```bash
-python -m pytest --cov=llm_obs                       # 36 tests
+python -m pytest --cov=llm_obs                       # 43 tests
 promtool test rules prometheus/rules/tests/llm_test.yml   # alert unit tests
 python scripts/verify_queries.py                     # against a running Prometheus
 ```
@@ -83,7 +101,7 @@ python scripts/verify_queries.py                     # against a running Prometh
   fails the test instead of leaving an empty panel).
 - **`verify_queries.py`** runs every dashboard query against a live Prometheus and fails on an error or an empty result.
 - **CI** (`.github/workflows/ci.yml`): lint, tests on Python 3.11-3.13, generated-dashboard check, `docker compose config`,
-  `promtool check` and unit tests, and a `stack` job that starts Prometheus with the service, sends traffic and runs `verify_queries.py`.
+  `promtool check` and unit tests, and a `stack` job that starts Prometheus and Tempo with the service, sends traffic, runs `verify_queries.py` and checks that a request's trace is stored in Tempo.
 
 ## Evidence
 
@@ -149,7 +167,7 @@ which is why alerts resolve a minute or two after the problem ends.
 - **No Alertmanager.** Alerts are visible in Prometheus and on the dashboard, but nothing sends an email or a Slack
   message. A real setup adds Alertmanager with routing and silences.
 - The provider is simulated; latency, token counts and errors come from a generator, so the absolute numbers mean nothing.
-- Metrics only. No traces or logs (OpenTelemetry would be the next step), so a slow request cannot be followed through its stages.
+- Metrics and traces, no logs. The trace has only two spans because the provider is simulated: a real service would add spans for retrieval, tool calls and each model call. Traces are not sampled (every request is kept), which is fine for a demo and not for production traffic.
 - One process: counters and the daily spend live in memory. With several workers each exposes its own numbers and
   the daily spend would need to be aggregated (or kept in Redis).
 - `/metrics` has no authentication; keep it on an internal network.

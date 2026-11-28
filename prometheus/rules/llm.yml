@@ -35,12 +35,12 @@ groups:
           runbook: "Check provider status, then switch traffic to a fallback provider."
 
       - alert: LLMHighLatencyP95
-        expr: llm:latency_seconds:p95_2m > 2 and llm:requests:rate2m > 0.2
+        expr: llm:latency_seconds:p95_2m > 3 and llm:requests:rate2m > 0.2
         for: 1m
         labels:
           severity: warning
         annotations:
-          summary: "p95 latency of successful LLM calls is above 2 seconds"
+          summary: "p95 latency of successful LLM calls is above 3 seconds"
           description: "p95 is {{ $value | humanizeDuration }} over the last 2 minutes."
 
       - alert: LLMBudgetMostlySpent

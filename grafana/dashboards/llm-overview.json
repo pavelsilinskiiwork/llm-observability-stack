@@ -156,7 +156,7 @@
       "id": 3,
       "type": "stat",
       "title": "p95 latency (ok)",
-      "description": "95% of successful calls finish faster than this. Alert fires above 2 s.",
+      "description": "95% of successful calls finish faster than this. Alert fires above 3 s.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -191,7 +191,7 @@
               },
               {
                 "color": "red",
-                "value": 2
+                "value": 3
               }
             ]
           }

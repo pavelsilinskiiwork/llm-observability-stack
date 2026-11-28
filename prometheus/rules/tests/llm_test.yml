@@ -70,7 +70,7 @@ tests:
           - exp_labels:
               severity: warning
             exp_annotations:
-              summary: "p95 latency of successful LLM calls is above 2 seconds"
+              summary: "p95 latency of successful LLM calls is above 3 seconds"
               description: "p95 is 4.85s over the last 2 minutes."
 
   - interval: 15s

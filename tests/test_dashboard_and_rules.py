@@ -111,9 +111,11 @@ def test_prometheus_scrapes_the_app_and_loads_the_rules():
 
 def test_compose_mounts_what_the_configs_expect():
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text())["services"]
-    assert set(compose) == {"app", "prometheus", "grafana"}
+    assert set(compose) == {"app", "prometheus", "grafana", "tempo"}
     assert any("prometheus.yml" in v for v in compose["prometheus"]["volumes"])
     assert any(v.endswith("/etc/grafana/provisioning:ro") for v in compose["grafana"]["volumes"])
+    assert any(v.endswith("tempo.yml:ro") for v in compose["tempo"]["volumes"])
+    assert compose["app"]["environment"]["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://tempo:4318"
     for service in compose.values():  # nothing is exposed beyond the local machine
         assert all(p.startswith("127.0.0.1:") for p in service["ports"])
 

@@ -12,6 +12,7 @@ class Settings:
     latency_scale: float = 1.0  # multiplies the simulated model latency; tests use 0
     demo_controls: bool = False  # exposes POST /demo/mode so a load script can break the service on purpose
     version: str = "dev"
+    otlp_endpoint: str = ""  # e.g. http://tempo:4318; empty = tracing created but nothing exported
 
     @classmethod
     def from_env(cls, env=None) -> "Settings":
@@ -22,4 +23,5 @@ class Settings:
             latency_scale=float(env.get("LATENCY_SCALE", d.latency_scale)),
             demo_controls=_bool(env.get("DEMO_CONTROLS", str(d.demo_controls))),
             version=env.get("GIT_SHA", d.version) or d.version,
+            otlp_endpoint=env.get("OTEL_EXPORTER_OTLP_ENDPOINT", d.otlp_endpoint),
         )

@@ -4,8 +4,19 @@ services:
     environment:
       DEMO_CONTROLS: "true"
       DAILY_BUDGET_USD: ${DAILY_BUDGET_USD:-1.0}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4318
     ports:
       - "127.0.0.1:8000:8000"
+    depends_on:
+      - tempo
+
+  tempo:
+    image: grafana/tempo:2.6.1
+    command: ["-config.file=/etc/tempo/tempo.yml"]
+    volumes:
+      - ./tempo/tempo.yml:/etc/tempo/tempo.yml:ro
+    ports:
+      - "127.0.0.1:3200:3200"
 
   prometheus:
     image: prom/prometheus:v2.55.1
@@ -30,3 +41,4 @@ services:
       - "127.0.0.1:3000:3000"
     depends_on:
       - prometheus
+      - tempo

@@ -4,12 +4,15 @@ import time
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
+from opentelemetry import propagate, trace
+from opentelemetry.trace import Status, StatusCode
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, generate_latest
 from pydantic import BaseModel, Field, field_validator
 
 from .metrics import DailySpend, Metrics
 from .providers import MODES, PROFILES, FakeProvider, ProviderError
 from .settings import Settings
+from .tracing import build_tracer_provider
 
 
 class ChatBody(BaseModel):
@@ -29,12 +32,15 @@ class ModeBody(BaseModel):
     mode: str
 
 
-def create_app(settings: Settings | None = None, provider: FakeProvider | None = None, registry=None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None, provider: FakeProvider | None = None, registry=None, tracer_provider=None
+) -> FastAPI:
     settings = settings or Settings.from_env()
     provider = provider or FakeProvider(settings.latency_scale)
     registry = registry or CollectorRegistry()
     metrics = Metrics(registry, settings.daily_budget_usd, settings.version, DailySpend())
     metrics.init_series(provider.name, PROFILES)
+    tracer = (tracer_provider or build_tracer_provider(settings.version, settings.otlp_endpoint)).get_tracer("llm_obs")
     app = FastAPI(title="LLM observability demo", version=settings.version)
     app.state.metrics = metrics
     app.state.provider = provider
@@ -60,23 +66,40 @@ def create_app(settings: Settings | None = None, provider: FakeProvider | None =
         return Response(generate_latest(registry), media_type=CONTENT_TYPE_LATEST)
 
     @app.post("/chat")
-    async def chat(body: ChatBody):
-        metrics.inflight.inc()
-        started = time.perf_counter()
-        try:
-            result = await provider.generate(body.model, body.message, body.max_tokens)
-        except ProviderError:
-            metrics.record_llm(provider.name, body.model, "error", time.perf_counter() - started)
-            return JSONResponse({"error": "provider_failed"}, status_code=502)
-        finally:
-            metrics.inflight.dec()
-        metrics.record_llm(provider.name, body.model, "ok", time.perf_counter() - started, result)
-        return {
-            "text": result.text,
-            "model": body.model,
-            "usage": {"input_tokens": result.input_tokens, "output_tokens": result.output_tokens},
-            "cost_usd": round(result.cost_usd, 8),
-        }
+    async def chat(body: ChatBody, request: Request):
+        parent = propagate.extract(dict(request.headers))  # continue the caller's trace if it sent a traceparent
+        with tracer.start_as_current_span("chat", context=parent, kind=trace.SpanKind.SERVER) as root:
+            trace_id = format(root.get_span_context().trace_id, "032x")
+            headers = {"x-trace-id": trace_id}
+            root.set_attribute("gen_ai.request.model", body.model)
+            metrics.inflight.inc()
+            started = time.perf_counter()
+            try:
+                with tracer.start_as_current_span("llm.generate") as span:
+                    span.set_attribute("gen_ai.system", provider.name)
+                    span.set_attribute("gen_ai.request.model", body.model)
+                    span.set_attribute("gen_ai.request.max_tokens", body.max_tokens)
+                    result = await provider.generate(body.model, body.message, body.max_tokens)
+                    span.set_attribute("gen_ai.usage.input_tokens", result.input_tokens)
+                    span.set_attribute("gen_ai.usage.output_tokens", result.output_tokens)
+                    span.set_attribute("llm.cost_usd", round(result.cost_usd, 8))
+            except ProviderError as exc:
+                root.set_status(Status(StatusCode.ERROR, "provider_failed"))
+                root.record_exception(exc)
+                metrics.record_llm(provider.name, body.model, "error", time.perf_counter() - started)
+                return JSONResponse({"error": "provider_failed"}, status_code=502, headers=headers)
+            finally:
+                metrics.inflight.dec()
+            metrics.record_llm(provider.name, body.model, "ok", time.perf_counter() - started, result)
+            return JSONResponse(
+                {
+                    "text": result.text,
+                    "model": body.model,
+                    "usage": {"input_tokens": result.input_tokens, "output_tokens": result.output_tokens},
+                    "cost_usd": round(result.cost_usd, 8),
+                },
+                headers=headers,
+            )
 
     if settings.demo_controls:
 

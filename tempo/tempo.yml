@@ -1,0 +1,22 @@
+# Single-binary Tempo for a local demo: receives OTLP/HTTP from the app, keeps traces on local disk.
+server:
+  http_listen_port: 3200
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        http:
+          endpoint: 0.0.0.0:4318
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /tmp/tempo/wal
+    local:
+      path: /tmp/tempo/blocks
+
+compactor:
+  compaction:
+    block_retention: 1h   # demo only; /tmp is used because it is writable for the non-root tempo user

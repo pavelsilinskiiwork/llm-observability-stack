@@ -8,3 +8,8 @@ datasources:
     isDefault: true
     jsonData:
       timeInterval: 5s       # the scrape interval, so $__rate_interval is computed correctly
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
